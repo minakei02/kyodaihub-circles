@@ -1,0 +1,14 @@
+{
+  "name": "kyodaihub-circles",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "京大ポケットの公開中のサークルを、配信ファイル（circles.json）にまとめる。外から入れるパッケージは使わない",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "sync": "node src/sync.ts",
+    "test": "node --test \"src/**/*.test.ts\""
+  }
+}

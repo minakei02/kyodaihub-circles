@@ -1,0 +1,102 @@
+name: サークル情報の同期
+
+on:
+  schedule:
+    # 6時間ごと（日本時間 0:15・6:15・12:15・18:15）。GitHub の時刻は協定世界時
+    - cron: '15 3,9,15,21 * * *'
+  workflow_dispatch:
+    inputs:
+      allow_drop:
+        description: '公開中のサークルが前回の半分より少なくなっても公開する（まとめて下書きにしたときなど）'
+        type: boolean
+        default: false
+
+# 同時に2つ動いて公開内容が入れ違わないようにする
+concurrency:
+  group: sync-circles
+  cancel-in-progress: false
+
+# 権限は仕事ごとに必要な分だけ渡す。ここでは何も渡さない
+permissions: {}
+
+# 使う部品は GitHub 公式のものだけ。中身が後から差し替わらないよう、版をコミットの番号で固定する。
+# 外から入れるパッケージ（npm）は使わない。鍵も使わない（公開中のサークルは、もともとだれでも読めるデータ）
+
+jobs:
+  build:
+    name: Firestore から公開中のサークルを読む
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - run: npm test
+
+      # 失敗したらここで止まり、公開中の内容はそのまま残る
+      - name: 読み込み
+        env:
+          ALLOW_DROP: ${{ inputs.allow_drop && '--allow-drop' || '' }}
+        run: npm run sync -- --previous-site "https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/" $ALLOW_DROP
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: circles-summary
+          path: record/summary.json
+          retention-days: 3
+
+  deploy:
+    name: GitHub Pages に公開する
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  # 内容が変わったときだけ、件数と中身の指紋（data/summary.json）を記録する。サークルの中身そのものは残さない（公開リポジトリの履歴は消せないため）。
+  # 公開リポジトリは 60 日間動きがないと定期実行が止まるので、それを防ぐ役目もある
+  record:
+    name: 変更の記録を残す
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: circles-summary
+          path: data
+
+      - name: 変わっていればコミットする
+        run: |
+          git add --intent-to-add data/summary.json
+          if git diff --quiet -- data/summary.json; then
+            echo "内容の変更なし"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/summary.json
+          git commit -m "サークル情報を更新 ($(TZ=Asia/Tokyo date +%Y-%m-%d))"
+          git push || (git pull --rebase && git push)
